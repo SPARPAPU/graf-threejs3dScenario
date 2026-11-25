@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="es">
+	<head>
+		<title>three.js webgl - FBX loader - Dancing Twerk (Escenario 3D)</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link type="text/css" rel="stylesheet" href="main.css">
+		<style>
+			#inicio {
+				position: fixed;
+				inset: 0;
+				z-index: 10;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				flex-direction: column;
+				gap: 12px;
+				background: rgba( 0, 0, 0, 0.75 );
+				color: #fff;
+				font-family: system-ui, sans-serif;
+				cursor: pointer;
+				text-align: center;
+			}
+			#inicio h2 { margin: 0; font-weight: 600; }
+			#inicio p { margin: 0; opacity: 0.8; }
+			#inicio.oculto { display: none; }
+		</style>
+	</head>
+
+	<body>
+		<div id="info">
+			<a href="https://threejs.org" target="_blank" rel="noopener">three.js</a> - FBXLoader + HDR + Audio<br />
+			Dancing Twerk - Personaje y animación de <a href="https://www.mixamo.com/" target="_blank" rel="noopener">Mixamo</a>
+		</div>
+
+		<div id="inicio">
+			<h2 id="inicioTitulo">Cargando escenario…</h2>
+			<p id="inicioTexto">Espera un momento</p>
+		</div>
+
+		<script>
+			// Diagnóstico: muestra en pantalla cualquier error de la página
+			function mostrarFallo( msg ) {
+
+				document.getElementById( 'inicioTitulo' ).textContent = 'Error en la página';
+				document.getElementById( 'inicioTexto' ).textContent = msg;
+
+			}
+			window.addEventListener( 'error', function ( e ) {
+
+				mostrarFallo( e.message || 'No se pudo cargar un archivo o módulo (ver consola F12)' );
+
+			} );
+			window.addEventListener( 'unhandledrejection', function ( e ) {
+
+				mostrarFallo( String( e.reason ) );
+
+			} );
+			setTimeout( function () {
+
+				const t = document.getElementById( 'inicioTitulo' );
+				if ( t.textContent.indexOf( 'Cargando' ) === 0 ) {
+
+					t.textContent = 'Está tardando demasiado';
+					document.getElementById( 'inicioTexto' ).textContent = 'Abre la consola (F12) y revisa el error en rojo o la pestaña Network';
+
+				}
+
+			}, 15000 );
+		</script>
+
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "../build/three.module.js",
+					"three/addons/": "./jsm/"
+				}
+			}
+		</script>
+
+		<script type="module">
+
+			import * as THREE from 'three';
+
+			import Stats from 'three/addons/libs/stats.module.js';
+
+			import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+			import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+			import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+			import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+
+			// =====================================================
+			// CONFIGURACIÓN: cambia aquí las rutas de tus archivos
+			// (todas relativas a la carpeta /examples/)
+			// =====================================================
+			const RUTA_MODELO = 'models/fbx/dancing_twerk.fbx';
+			const RUTA_HDR = 'textures/ambiente.hdr';
+			const RUTA_PISO = 'textures/piso_madera.jpg';
+			const RUTA_MUSICA = 'audio/musica.mp3';
+
+			// Skin opcional para el modelo FBX. Si tu FBX ya trae textura, deja null.
+			// Si quieres forzar una imagen, usa por ejemplo: 'textures/skin.png'
+			const RUTA_SKIN = null;
+
+			const TAMANO_PISO = 400; // área cuadrada donde baila el modelo
+
+			// =====================================================
+
+			const manager = new THREE.LoadingManager();
+
+			let camera, scene, renderer, controls, stats, object, loader;
+			let mixer;
+			let musica;
+
+			const clock = new THREE.Clock();
+
+			// Pantalla de carga / inicio (el navegador exige un clic para reproducir audio)
+			const pantalla = document.getElementById( 'inicio' );
+			const tituloInicio = document.getElementById( 'inicioTitulo' );
+			const textoInicio = document.getElementById( 'inicioTexto' );
+
+			let todoCargado = false;
+
+			let hayError = false;
+
+			manager.onLoad = function () {
+
+				if ( hayError ) return;
+
+				todoCargado = true;
+				tituloInicio.textContent = 'Haz clic para iniciar';
+				textoInicio.textContent = 'Se activará la música de fondo';
+
+			};
+
+			manager.onError = function ( url ) {
+
+				hayError = true;
+				console.error( 'No se pudo cargar: ' + url );
+				tituloInicio.textContent = 'Error al cargar un archivo';
+				textoInicio.textContent = 'Revisa la ruta: ' + url;
+
+			};
+
+			pantalla.addEventListener( 'click', function () {
+
+				if ( ! todoCargado ) return;
+
+				pantalla.classList.add( 'oculto' );
+
+				if ( musica && musica.buffer && ! musica.isPlaying ) musica.play();
+
+			} );
+
+			// Material morado de respaldo, solo si el FBX no trae textura propia
+			function crearMaterialRespaldo() {
+
+				return new THREE.MeshPhongMaterial( {
+					color: 0x8e24aa,
+					specular: 0xe1bee7,
+					shininess: 120
+				} );
+
+			}
+
+			init();
+
+			function init() {
+
+				const container = document.createElement( 'div' );
+				document.body.appendChild( container );
+
+				camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 5000 );
+				camera.position.set( 100, 200, 300 );
+
+				scene = new THREE.Scene();
+
+				// ---------- 1. ESCENARIO 360° (HDR) ----------
+				new RGBELoader( manager ).load( RUTA_HDR, function ( texture ) {
+
+					texture.mapping = THREE.EquirectangularReflectionMapping;
+					scene.background = texture;   // fondo 360°
+					scene.environment = texture;  // iluminación y reflejos
+
+				} );
+
+				// ---------- Luces ----------
+				const hemiLight = new THREE.HemisphereLight( 0xffffff, 0x444444, 0.8 );
+				hemiLight.position.set( 0, 200, 0 );
+				scene.add( hemiLight );
+
+				const dirLight = new THREE.DirectionalLight( 0xffffff, 2.5 );
+				dirLight.position.set( 0, 200, 100 );
+				dirLight.castShadow = true;
+				dirLight.shadow.camera.top = 180;
+				dirLight.shadow.camera.bottom = - 100;
+				dirLight.shadow.camera.left = - 120;
+				dirLight.shadow.camera.right = 120;
+				dirLight.shadow.mapSize.set( 2048, 2048 );
+				scene.add( dirLight );
+
+				// Foco cenital sobre el modelo
+				const topLight = new THREE.SpotLight( 0xffffff, 3, 0, Math.PI / 4, 0.4, 0 );
+				topLight.position.set( 0, 400, 0 );
+				scene.add( topLight );
+
+				// ---------- 2. PISO CON TEXTURA (área cuadrada) ----------
+				const texturaPiso = new THREE.TextureLoader( manager ).load( RUTA_PISO );
+				texturaPiso.wrapS = THREE.RepeatWrapping;
+				texturaPiso.wrapT = THREE.RepeatWrapping;
+				texturaPiso.repeat.set( 4, 4 );
+				texturaPiso.colorSpace = THREE.SRGBColorSpace;
+
+				const piso = new THREE.Mesh(
+					new THREE.PlaneGeometry( TAMANO_PISO, TAMANO_PISO ),
+					new THREE.MeshStandardMaterial( { map: texturaPiso, roughness: 0.4, metalness: 0 } )
+				);
+				piso.rotation.x = - Math.PI / 2;
+				piso.receiveShadow = true;
+				scene.add( piso );
+
+				// ---------- Modelo FBX ----------
+				loader = new FBXLoader( manager );
+				cargarModelo();
+
+				// ---------- 3. MÚSICA DE FONDO (mp3) ----------
+				const listener = new THREE.AudioListener();
+				camera.add( listener );
+				scene.add( camera );
+
+				musica = new THREE.Audio( listener );
+				new THREE.AudioLoader( manager ).load( RUTA_MUSICA, function ( buffer ) {
+
+					musica.setBuffer( buffer );
+					musica.setLoop( true );
+					musica.setVolume( 0.5 );
+
+				} );
+
+				// ---------- Renderer ----------
+				renderer = new THREE.WebGLRenderer( { antialias: true } );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				renderer.setAnimationLoop( animate );
+				renderer.shadowMap.enabled = true;
+				renderer.toneMapping = THREE.ACESFilmicToneMapping;
+				renderer.toneMappingExposure = 1;
+				container.appendChild( renderer.domElement );
+
+				controls = new OrbitControls( camera, renderer.domElement );
+				controls.enableZoom = true;
+				controls.enablePan = false;
+				controls.enableDamping = true;
+				controls.maxPolarAngle = Math.PI / 2 - 0.02; // no bajar de la altura del piso
+				controls.target.set( 0, 100, 0 );
+				controls.update();
+
+				window.addEventListener( 'resize', onWindowResize );
+
+				// stats
+				stats = new Stats();
+				container.appendChild( stats.dom );
+
+				// GUI de música
+				const gui = new GUI();
+				const audioParams = {
+					volumen: 0.5,
+					pausar_reanudar: function () {
+
+						if ( ! musica.buffer ) return;
+						if ( musica.isPlaying ) musica.pause(); else musica.play();
+
+					}
+				};
+				const carpetaMusica = gui.addFolder( 'Música' );
+				carpetaMusica.add( audioParams, 'volumen', 0, 1, 0.01 ).onChange( function ( v ) {
+
+					musica.setVolume( v );
+
+				} );
+				carpetaMusica.add( audioParams, 'pausar_reanudar' ).name( 'Pausar / Reanudar' );
+
+			}
+
+			function cargarModelo() {
+
+				// Textura (skin) opcional para el modelo
+				let skin = null;
+
+				if ( RUTA_SKIN ) {
+
+					skin = new THREE.TextureLoader( manager ).load( RUTA_SKIN );
+					skin.colorSpace = THREE.SRGBColorSpace;
+
+				}
+
+				loader.load( RUTA_MODELO, function ( group ) {
+
+					object = group;
+					object.scale.setScalar( 1 );
+
+					// Animación del baile
+					if ( object.animations && object.animations.length ) {
+
+						mixer = new THREE.AnimationMixer( object );
+						mixer.clipAction( object.animations[ 0 ] ).play();
+
+					}
+
+					// ---------- 2. TEXTURA AL MODELO FBX ----------
+					object.traverse( function ( child ) {
+
+						if ( ! child.isMesh ) return;
+
+						child.castShadow = true;
+						child.receiveShadow = true;
+
+						const materiales = Array.isArray( child.material ) ? child.material : [ child.material ];
+
+						if ( skin ) {
+
+							// Se aplica la imagen indicada en RUTA_SKIN
+							materiales.forEach( function ( m ) {
+
+								m.map = skin;
+								if ( m.color ) m.color.set( 0xffffff );
+								m.needsUpdate = true;
+
+							} );
+
+						} else {
+
+							const tieneTextura = materiales.some( function ( m ) {
+
+								return m && m.map;
+
+							} );
+
+							// Si el FBX no trae textura, usa el material morado de respaldo
+							if ( ! tieneTextura ) child.material = crearMaterialRespaldo();
+
+						}
+
+					} );
+
+					scene.add( object );
+
+				} );
+
+			}
+
+			function onWindowResize() {
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+			}
+
+			//
+
+			function animate() {
+
+				const delta = clock.getDelta();
+
+				if ( mixer ) mixer.update( delta );
+
+				controls.update();
+
+				renderer.render( scene, camera );
+
+				stats.update();
+
+			}
+
+		</script>
+
+	</body>
+</html>
